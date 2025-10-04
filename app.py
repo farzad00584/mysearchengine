@@ -1,56 +1,147 @@
-from flask import Flask, request, render_template_string
-import os
+# app.py
+from flask import Flask, request, render_template_string, abort, redirect
+import os, csv, html
 
 app = Flask(__name__)
 
-# خواندن داده‌ها از فایل
-with open("data.txt", "r", encoding="utf-8") as f:
-    texts = [line.strip() for line in f.readlines()]
+# ---------- خواندن داده‌ها از data.csv ----------
+DATA_FILE = "data.csv"
 
-# قالب HTML صفحه
-html_template = """ 
-<!DOCTYPE html>
+def load_data():
+    rows = []
+    if not os.path.exists(DATA_FILE):
+        return rows
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            # اطمینان از فیلدها و نرمال‌سازی
+            rows.append({
+                "id": r.get("id","").strip(),
+                "title": r.get("title","").strip(),
+                "snippet": r.get("snippet","").strip(),
+                "content": r.get("content","").strip(),
+                "url": r.get("url","").strip()  # اگر پر باشد، به url هدایت می‌کنیم
+            })
+    return rows
+
+# بارگذاری اولیه‌ی داده‌ها (در هر درخواست هم دوباره می‌خوانیم تا تغییرات فایل سریع اعمال شود)
+def search_texts(query, items):
+    if not query:
+        return []
+    qwords = [w for w in query.lower().split() if w]
+    results = []
+    for item in items:
+        text = (item["title"] + " " + item["snippet"] + " " + item["content"]).lower()
+        # امتیاز ساده: تعداد کلمات جستجو که در متن وجود دارند
+        score = sum(1 for w in qwords if w in text)
+        if score > 0:
+            results.append((score, item))
+    # مرتب‌سازی نزولی بر اساس امتیاز (مربوط‌ترین‌ها بالاتر باشند)
+    results.sort(key=lambda x: x[0], reverse=True)
+    return [r[1] for r in results]
+
+# ---------- قالب HTML ساده با لیست نتایج و صفحات محتوا ----------
+INDEX_HTML = """
+<!doctype html>
 <html lang="fa">
 <head>
-<meta charset="UTF-8">
-<title>موتور جستجوی پیشرفته من</title>
+<meta charset="utf-8">
+<title>موتور جستجوی من</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body { font-family: sans-serif; text-align: center; margin-top: 80px; background: #f5f5f5; }
-input[type=text] { width: 60%; padding: 12px; border-radius: 8px; border: 1px solid #ccc; }
-button { padding: 12px 25px; border-radius: 8px; background: #4285f4; color: white; border: none; cursor: pointer; margin-left: 5px; }
-div.result { margin-top: 25px; width: 60%; margin-left: auto; margin-right: auto; text-align: left; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-p.result-title { font-weight: bold; margin-bottom: 5px; }
+  body{font-family:Tahoma, sans-serif; background:#f7f7f7; margin:0; padding:0}
+  .container{max-width:900px;margin:40px auto;padding:0 15px}
+  .search-box{display:flex; justify-content:center; margin-bottom:25px}
+  input[type=text]{width:70%;padding:12px;border-radius:24px;border:1px solid #ccc;font-size:16px}
+  button{padding:12px 18px;border-radius:24px;border:none;background:#1a73e8;color:#fff;margin-left:10px;cursor:pointer}
+  .results{background:#fff;padding:12px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.06)}
+  .item{padding:12px 10px;border-bottom:1px solid #eee}
+  .item:last-child{border-bottom:none}
+  .title{font-weight:700;color:#1a0dab;font-size:18px;margin-bottom:6px}
+  .snippet{color:#444}
+  a.title-link{text-decoration:none}
+  .meta{color:#666;font-size:13px;margin-top:8px}
 </style>
 </head>
 <body>
-<h1>🔍 موتور جستجوی پیشرفته من</h1>
-<form method="GET">
-<input type="text" name="q" placeholder="دنبال چی می‌گردی؟" value="{{query}}">
-<button type="submit">جستجو</button>
-</form>
-<div class="result">
-{% for r in results %}
-<p class="result-title">🔹 نتیجه:</p>
-<p>{{r}}</p>
-<hr>
-{% endfor %}
-{% if not results and query %}
-<p>❌ نتیجه‌ای پیدا نشد.</p>
-{% endif %}
-</div>
+  <div class="container">
+    <h2>🔎 موتور جستجوی من</h2>
+    <form method="GET" class="search-box">
+      <input type="text" name="q" placeholder="عبارت را وارد کنید..." value="{{query|e}}">
+      <button type="submit">جستجو</button>
+    </form>
+
+    <div class="results">
+      {% if not query %}
+        <p style="padding:12px;color:#555">عبارتی وارد کنید و Enter بزنید یا دکمه جستجو را بزنید.</p>
+      {% else %}
+        <p style="padding:8px 12px;color:#333">نتایج برای: <strong>{{query|e}}</strong> — {{results|length}} مورد</p>
+        {% for r in results %}
+          <div class="item">
+            {% if r.url %}
+              <a class="title-link" href="{{r.url}}" target="_blank" rel="noopener noreferrer"><div class="title">{{r.title}}</div></a>
+            {% else %}
+              <a class="title-link" href="/view/{{r.id}}"><div class="title">{{r.title}}</div></a>
+            {% endif %}
+            <div class="snippet">{{r.snippet}}</div>
+            <div class="meta">شناسه: {{r.id}}</div>
+          </div>
+        {% endfor %}
+        {% if results|length == 0 %}
+          <p style="padding:12px;color:#900">هیچ نتیجه‌ای پیدا نشد.</p>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
 </body>
 </html>
 """
 
+VIEW_HTML = """
+<!doctype html>
+<html lang="fa">
+<head>
+<meta charset="utf-8">
+<title>{{item.title}}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{font-family:Tahoma, sans-serif; background:#fafafa; margin:0; padding:0}
+  .container{max-width:900px;margin:30px auto;padding:0 15px}
+  .card{background:#fff;padding:20px;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,0.06)}
+  h1{margin-top:0}
+  .back{display:inline-block;margin-bottom:12px;color:#1a73e8;text-decoration:none}
+</style>
+</head>
+<body>
+  <div class="container">
+    <a class="back" href="/">◀ بازگشت به نتایج</a>
+    <div class="card">
+      <h1>{{item.title}}</h1>
+      <p style="color:#555">{{item.content}}</p>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+# ---------- مسیرها ----------
 @app.route("/", methods=["GET"])
-def home():
-    query = request.args.get("q", "")
-    if query:
-        query_words = query.lower().split()
-        results = [t for t in texts if all(w in t.lower() for w in query_words)]
-    else:
-        results = []
-    return render_template_string(html_template, results=results, query=query)
+def index():
+    query = request.args.get("q", "").strip()
+    items = load_data()
+    results = search_texts(query, items) if query else []
+    return render_template_string(INDEX_HTML, query=query, results=results)
+
+@app.route("/view/<id>", methods=["GET"])
+def view_item(id):
+    items = load_data()
+    for it in items:
+        if it["id"] == id:
+            # اگر item دارای url خارجی بود، مستقیم redirect کن
+            if it.get("url"):
+                return redirect(it["url"])
+            return render_template_string(VIEW_HTML, item=it)
+    abort(404)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
